@@ -3,7 +3,7 @@ import os
 import json
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pica_punch import PicaPuncher
 from jm_punch import JmPuncher
 
@@ -74,7 +74,8 @@ def extract_summary(log_lines):
 if __name__ == "__main__":
     # 记录开始时间
     start_time = time.time()
-    start_time_str = datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S")
+    beijing_time = datetime.utcnow() + timedelta(hours=8)
+    start_time_str = beijing_time.strftime("%Y-%m-%d %H:%M:%S")
 
     logging.info("=" * 50)
     logging.info("🚀 ComicsPuncher 启动")
@@ -102,13 +103,12 @@ if __name__ == "__main__":
         logging.info(f"\n🎨 开始执行 Pica 签到 ({len(pica_accounts)} 个账号)")
         for idx, account in enumerate(pica_accounts, 1):
             logging.info(f"\n--- Pica 账号 {idx}/{len(pica_accounts)} ---")
-            list_handler.clear()  # 清空，只收集当前账号的日志
+            list_handler.clear()
             pica = PicaPuncher(account["user"], account["password"], proxy)
             try:
                 pica.run()
             except Exception as e:
                 logging.error(f"Pica 账号 {idx} 异常: {e}")
-            # 提取摘要
             logs = list_handler.get_messages()
             summary = extract_summary(logs)
             if summary:
@@ -155,12 +155,11 @@ if __name__ == "__main__":
         duration_str = f"{minutes}分{seconds}秒"
 
     # 组装推送消息
-    header = f"签到任务完成！\n开始时间: {start_time_str}\n任务用时: {duration_str}\n"
+    header = f"签到任务完成！\n开始时间（北京时间）: {start_time_str}\n任务用时: {duration_str}\n"
     if all_results:
         body = "\n\n".join(all_results)
         final_msg = header + "\n" + body
     else:
         final_msg = header + "\n无任何签到结果输出。"
 
-    # 发送 Telegram 推送
     send_tg_message(final_msg)
