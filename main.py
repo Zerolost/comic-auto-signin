@@ -155,7 +155,7 @@ if __name__ == "__main__":
         duration_str = f"{minutes}分{seconds}秒"
 
     # 组装推送消息
-    header = f"签到任务完成！\n开始时间（北京时间）: {start_time_str}\n任务用时: {duration_str}\n"
+    header = f"签到任务完成！\n开始时间: {start_time_str}\n任务用时: {duration_str}\n"
     if all_results:
         body = "\n\n".join(all_results)
         final_msg = header + "\n" + body
