@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+import requests
 from pica_punch import PicaPuncher
 from jm_punch import JmPuncher
 
@@ -32,6 +33,34 @@ def parse_accounts_config():
         logging.error(f"❌ JSON 配置解析失败: {e}")
         exit(1)
 
+# Telegram推送
+class ListHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.records = []
+    def emit(self, record):
+        self.records.append(self.format(record))
+    def get_messages(self):
+        return self.records
+    def clear(self):
+        self.records.clear()
+
+def send_tg_message(content: str):
+    token = os.environ.get("TG_BOT_TOKEN")
+    user_id = os.environ.get("TG_USER_ID")
+    if not token or not user_id:
+        logging.warning("未配置 TG_BOT_TOKEN 或 TG_USER_ID，跳过推送")
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        resp = requests.post(url, json={"chat_id": user_id, "text": content}, timeout=10)
+        if resp.status_code == 200:
+            logging.info("✅ Telegram 推送成功")
+        else:
+            logging.error(f"❌ Telegram 推送失败：{resp.text}")
+    except Exception as e:
+        logging.error(f"❌ 推送异常：{e}")
+
 if __name__ == "__main__":
     logging.info("=" * 50)
     logging.info("🚀 ComicsPuncher 启动")
@@ -39,6 +68,11 @@ if __name__ == "__main__":
     
     # 解析配置
     pica_accounts, jm_accounts, proxy = parse_accounts_config()
+    
+    # 挂载日志收集器
+    list_handler = ListHandler()
+    list_handler.setFormatter(logging.Formatter('%(message)s'))  # 只保留消息文本，不带时间戳
+    logging.getLogger().addHandler(list_handler)
     
     # 检查配置
     if not pica_accounts and not jm_accounts:
@@ -69,3 +103,12 @@ if __name__ == "__main__":
     logging.info("\n" + "=" * 50)
     logging.info("✅ 所有任务执行完毕")
     logging.info("=" * 50)
+
+    # 取出日志并推送
+    logging.getLogger().removeHandler(list_handler)          # 先移除，避免后续推送日志被收集
+    all_logs = list_handler.get_messages()                   # 获取所有捕获的日志
+    if all_logs:
+        final_msg = "\n".join(all_logs)                      # 用换行合并
+    else:
+        final_msg = "签到完成，但未产生任何日志。"
+    send_tg_message(final_msg)
