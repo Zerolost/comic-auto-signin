@@ -2,6 +2,8 @@ import logging
 import os
 import json
 import requests
+import time
+from datetime import datetime
 from pica_punch import PicaPuncher
 from jm_punch import JmPuncher
 
@@ -33,7 +35,7 @@ def parse_accounts_config():
         logging.error(f"❌ JSON 配置解析失败: {e}")
         exit(1)
 
-# Telegram推送
+# Telegram 推送函数
 class ListHandler(logging.Handler):
     def __init__(self):
         super().__init__()
@@ -61,7 +63,19 @@ def send_tg_message(content: str):
     except Exception as e:
         logging.error(f"❌ 推送异常：{e}")
 
+# 过滤关键词
+KEYWORDS = ["🎉", "登录账号", "显示用户名", "金币余额", "===="]
+
+def extract_summary(log_lines):
+    """从完整日志中提取签到结果摘要"""
+    filtered = [line for line in log_lines if any(k in line for k in KEYWORDS)]
+    return "\n".join(filtered) if filtered else "（未提取到结果摘要，请检查日志）"
+
 if __name__ == "__main__":
+    # 记录开始时间
+    start_time = time.time()
+    start_time_str = datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S")
+
     logging.info("=" * 50)
     logging.info("🚀 ComicsPuncher 启动")
     logging.info("=" * 50)
@@ -71,7 +85,7 @@ if __name__ == "__main__":
     
     # 挂载日志收集器
     list_handler = ListHandler()
-    list_handler.setFormatter(logging.Formatter('%(message)s'))  # 只保留消息文本，不带时间戳
+    list_handler.setFormatter(logging.Formatter('%(message)s'))
     logging.getLogger().addHandler(list_handler)
     
     # 检查配置
@@ -80,13 +94,27 @@ if __name__ == "__main__":
         logging.error("   请在 ACCOUNTS_CONFIG 中至少配置一个平台的账号")
         exit(1)
     
+    # 用于存放每个账号的摘要结果
+    all_results = []
+    
     # 执行哔咔打卡
     if pica_accounts:
         logging.info(f"\n🎨 开始执行 Pica 签到 ({len(pica_accounts)} 个账号)")
         for idx, account in enumerate(pica_accounts, 1):
             logging.info(f"\n--- Pica 账号 {idx}/{len(pica_accounts)} ---")
+            list_handler.clear()  # 清空，只收集当前账号的日志
             pica = PicaPuncher(account["user"], account["password"], proxy)
-            pica.run()
+            try:
+                pica.run()
+            except Exception as e:
+                logging.error(f"Pica 账号 {idx} 异常: {e}")
+            # 提取摘要
+            logs = list_handler.get_messages()
+            summary = extract_summary(logs)
+            if summary:
+                all_results.append(f"【Pica账号{idx}】\n{summary}")
+            else:
+                all_results.append(f"【Pica账号{idx}】\n签到执行，但未获取到结果摘要。")
     else:
         logging.info("\n⏭️  未配置 Pica 账号，跳过")
 
@@ -95,8 +123,18 @@ if __name__ == "__main__":
         logging.info(f"\n📚 开始执行 JM 签到 ({len(jm_accounts)} 个账号)")
         for idx, account in enumerate(jm_accounts, 1):
             logging.info(f"\n--- JM 账号 {idx}/{len(jm_accounts)} ---")
+            list_handler.clear()
             jm = JmPuncher(account["user"], account["password"], proxy)
-            jm.run()
+            try:
+                jm.run()
+            except Exception as e:
+                logging.error(f"JM 账号 {idx} 异常: {e}")
+            logs = list_handler.get_messages()
+            summary = extract_summary(logs)
+            if summary:
+                all_results.append(f"【JM账号{idx}】\n{summary}")
+            else:
+                all_results.append(f"【JM账号{idx}】\n签到执行，但未获取到结果摘要。")
     else:
         logging.info("\n⏭️  未配置 JM 账号，跳过")
     
@@ -104,11 +142,25 @@ if __name__ == "__main__":
     logging.info("✅ 所有任务执行完毕")
     logging.info("=" * 50)
 
-    # 取出日志并推送
-    logging.getLogger().removeHandler(list_handler)          # 先移除，避免后续推送日志被收集
-    all_logs = list_handler.get_messages()                   # 获取所有捕获的日志
-    if all_logs:
-        final_msg = "\n".join(all_logs)                      # 用换行合并
+    # 移除日志收集器
+    logging.getLogger().removeHandler(list_handler)
+    
+    # 计算耗时
+    elapsed = time.time() - start_time
+    if elapsed < 60:
+        duration_str = f"{elapsed:.1f}秒"
     else:
-        final_msg = "签到完成，但未产生任何日志。"
+        minutes = int(elapsed // 60)
+        seconds = int(elapsed % 60)
+        duration_str = f"{minutes}分{seconds}秒"
+
+    # 组装推送消息
+    header = f"签到任务完成！\n开始时间: {start_time_str}\n任务用时: {duration_str}\n"
+    if all_results:
+        body = "\n\n".join(all_results)
+        final_msg = header + "\n" + body
+    else:
+        final_msg = header + "\n无任何签到结果输出。"
+
+    # 发送 Telegram 推送
     send_tg_message(final_msg)
