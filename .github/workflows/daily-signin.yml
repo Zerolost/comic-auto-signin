@@ -2,9 +2,7 @@ name: Comics Daily Sign-in
 
 on:
   schedule:
-    # 每天 UTC 时间 23:30 执行 (对应北京时间 7:30)
     - cron: '30 23 * * *'
-  # 支持手动触发
   workflow_dispatch:
     inputs:
       debug:
@@ -17,50 +15,29 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Check if already run today
-      id: check
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        # 获取今天的 UTC 日期
-        TODAY=$(date -u +%Y-%m-%d)
-        # 查询今天已完成的所有运行（排除当前正在运行的）
-        RUNS=$(gh api repos/${{ github.repository }}/actions/workflows/daily-signin.yml/runs \
-          --jq "[.[] | select(.created_at[:10] == \"$TODAY\" and .id != ${{ github.run_id }})] | length")
-        echo "Already run today: $RUNS"
-        if [ "$RUNS" -gt 0 ]; then
-          echo "skip=true" >> $GITHUB_OUTPUT
-        else
-          echo "skip=false" >> $GITHUB_OUTPUT
-        fi
-
     - name: Checkout code
-      if: steps.check.outputs.skip != 'true'
       uses: actions/checkout@v5
 
     - name: Set up Python
-      if: steps.check.outputs.skip != 'true'
       uses: actions/setup-python@v6
       with:
         python-version: '3.11'
         cache: 'pip'
 
     - name: Install dependencies
-      if: steps.check.outputs.skip != 'true'
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
     - name: Run Comics Sign-in
-      if: steps.check.outputs.skip != 'true'
       env:
         ACCOUNTS_CONFIG: ${{ secrets.ACCOUNTS_CONFIG }}
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
         TG_USER_ID: ${{ secrets.TG_USER_ID }}
       run: python main.py
-
+      
     - name: Upload logs (if failed)
-      if: failure() && steps.check.outputs.skip != 'true'
+      if: failure()
       uses: actions/upload-artifact@v4
       with:
         name: error-logs
