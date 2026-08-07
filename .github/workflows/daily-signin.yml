@@ -11,36 +11,76 @@ on:
         default: 'false'
 
 jobs:
-  signin:
+  check-and-run:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v5
+      - name: Checkout code
+        uses: actions/checkout@v5
 
-    - name: Set up Python
-      uses: actions/setup-python@v6
-      with:
-        python-version: '3.11'
-        cache: 'pip'
+      - name: 恢复签到成功记录缓存
+        id: cache-restore
+        uses: actions/cache@v5
+        with:
+          path: .last_success_date
+          key: last-success-marker-${{ github.repository }}
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: 判断今天是否已签到
+        id: check
+        run: |
+          current_date=$(TZ='Asia/Shanghai' date '+%Y-%m-%d')
+          echo "当前北京时间: $current_date"
+          if [ -f .last_success_date ]; then
+            last_date=$(cat .last_success_date)
+            echo "上次签到日期: $last_date"
+            if [ "$last_date" = "$current_date" ]; then
+              echo "今天已成功签到，跳过执行。"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "今天尚未签到，继续执行。"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
-    - name: Run Comics Sign-in
-      env:
-        ACCOUNTS_CONFIG: ${{ secrets.ACCOUNTS_CONFIG }}
-        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-        TG_USER_ID: ${{ secrets.TG_USER_ID }}
-      run: python main.py
-      
-    - name: Upload logs (if failed)
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: error-logs
-        path: |
-          *.log
-        retention-days: 7
+      - name: Set up Python
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Comics Sign-in
+        if: steps.check.outputs.skip == 'false'
+        env:
+          ACCOUNTS_CONFIG: ${{ secrets.ACCOUNTS_CONFIG }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_USER_ID: ${{ secrets.TG_USER_ID }}
+        run: python main.py
+
+      - name: 标记今天签到成功
+        if: success() && steps.check.outputs.skip == 'false'
+        run: |
+          date_str=$(TZ='Asia/Shanghai' date '+%Y-%m-%d')
+          echo "$date_str" > .last_success_date
+          echo "已记录成功签到日期: $date_str"
+
+      - name: 保存成功记录到缓存
+        if: success() && steps.check.outputs.skip == 'false'
+        uses: actions/cache@v5
+        with:
+          path: .last_success_date
+          key: last-success-marker-${{ github.repository }}
+
+      - name: Upload logs (if failed)
+        if: failure() && steps.check.outputs.skip == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-logs
+          path: |
+            *.log
+          retention-days: 7
