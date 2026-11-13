@@ -1,8 +1,7 @@
 name: Comics Daily Sign-in
 
 on:
-  schedule:
-    - cron: '30 23 * * *'
+  # 仅由外部定时（cron-job.org）通过 workflow_dispatch 触发，避免与内置 schedule 重复执行
   workflow_dispatch:
     inputs:
       debug:
