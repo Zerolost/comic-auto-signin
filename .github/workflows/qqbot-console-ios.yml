@@ -1,0 +1,565 @@
+name: Build QQBotConsole IPA
+on:
+  push:
+    branches: [build/qqbot-console-ios26]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: ios/ConsoleKit
+      - name: Compile with iPhoneOS SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ios/ConsoleKit
+          cat > ios/ConsoleKit/ConsoleApp.swift <<'QQ_SWIFT_SOURCE'
+          import SwiftUI
+          import ImageIO
+          
+          func friendly(_ error: Error) -> String {
+              (error as? ConsoleError)?.message ?? "读取失败，请检查网络后重试。"
+          }
+          
+          @main struct QQConsoleApp: App {
+              @State private var revision = 0
+              var body: some Scene {
+                  WindowGroup {
+                      TabView {
+                          NavigationStack { LibraryView() }.id(revision).tabItem { Label("素材", systemImage: "photo.stack") }
+                          NavigationStack { HistoryView() }.id(revision).tabItem { Label("运行", systemImage: "clock.arrow.circlepath") }
+                          NavigationStack { ConnectionView { revision += 1 } }.tabItem { Label("连接", systemImage: "key") }
+                      }.tint(.teal)
+                  }
+              }
+          }
+          
+          struct ConnectionView: View {
+              let changed: () -> Void
+              @State private var token = ""
+              @State private var saved = false
+              @State private var message = ""
+              var body: some View {
+                  Form {
+                      Section("GitHub 仓库") { Text(Hub.repo); Text("main · qq-mail.yml").foregroundStyle(.secondary) }
+                      Section {
+                          SecureField(saved ? "输入新令牌以替换" : "github_pat_…", text: $token).textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                          Button(saved ? "替换令牌" : "保存到钥匙串") {
+                              do { try Vault.save(token); token = ""; saved = true; message = "令牌已保存到此设备。"; changed() } catch { message = friendly(error) }
+                          }.disabled(token.isEmpty)
+                          if saved { Button("移除此设备的令牌", role: .destructive) {
+                              do { try Vault.erase(); token = ""; saved = false; message = "令牌已移除。"; changed() } catch { message = friendly(error) }
+                          } }
+                      } header: { Text("细粒度访问令牌") } footer: { Text("只授权上方仓库，Contents 设为只读，Actions 设为读写。") }
+                      if !message.isEmpty { Text(message) }
+                      Section("QQ 机器人") { NavigationLink { QQDirectPanel() } label: { Label("前台绑定与测试发送", systemImage: "bubble.left.and.bubble.right") } }
+                  }.navigationTitle("连接").onAppear { do { saved = try Vault.read() != nil } catch { message = friendly(error) } }.onDisappear { token = "" }
+              }
+          }
+          
+          struct LibraryView: View {
+              @State private var rows: [Entry] = []
+              @State private var status = "正在读取…"
+              var body: some View {
+                  List {
+                      Section("jobs / main") {
+                          if rows.isEmpty { Text(status).foregroundStyle(.secondary) }
+                          ForEach(rows) { row in NavigationLink { FolderView(dir: row) } label: { Label(row.name, systemImage: "folder") } }
+                      }
+                  }.navigationTitle("待发目录").task { await load() }.refreshable { await load() }
+              }
+              private func load() async {
+                  do { rows = try await Hub.directories(); status = "没有待发目录。" } catch { rows = []; status = friendly(error) }
+              }
+          }
+          
+          struct FolderView: View {
+              let dir: Entry
+              @State private var files: [Entry] = []
+              @State private var status = "正在读取…"
+              @State private var ready = false
+              @State private var confirming = false
+              @State private var busy = false
+              @State private var submitted = false
+              var body: some View {
+                  List {
+                      Section("图片 · \(files.count)") {
+                          ForEach(files) { file in NavigationLink { PictureView(dir: dir, file: file) } label: { Label(file.name, systemImage: "photo") } }
+                      }
+                      if !status.isEmpty { Text(status).foregroundStyle(.secondary) }
+                  }.navigationTitle(dir.name).navigationBarTitleDisplayMode(.inline)
+                  .safeAreaInset(edge: .bottom) {
+                      Group {
+                          if #available(iOS 26, *) { action.buttonStyle(.glassProminent) } else { action.buttonStyle(.borderedProminent) }
+                      }.controlSize(.large).padding()
+                  }.task {
+                      do {
+                          let entries = try await Hub.entries([dir.name])
+                          if entries.contains(where: { $0.name == "images" && $0.type == "dir" }) {
+                              files = try await Hub.entries([dir.name, "images"]).filter { $0.type == "file" && ["png", "jpg", "jpeg", "webp", "gif"].contains(($0.name as NSString).pathExtension.lowercased()) }
+                          }
+                          ready = !files.isEmpty; status = ready ? "" : "没有工作流支持的图片。"
+                      } catch { status = friendly(error) }
+                  }.alert("发送这个目录的图片？", isPresented: $confirming) {
+                      Button("确认发送") { guard !busy && !submitted else { return }; busy = true; Task { await submit() } }
+                      Button("取消", role: .cancel) {}
+                  } message: { Text("jobs/\(dir.name)\n通过 qq-mail.yml 向已配置的 QQ 群发送，最多一个目录，保留原素材。") }
+              }
+              private var action: some View {
+                  Button { confirming = true } label: { Label(submitted ? "已提交" : (busy ? "正在核对目录…" : "发送这个目录"), systemImage: "paperplane.fill") }.disabled(!ready || busy || submitted)
+              }
+              private func submit() async {
+                  defer { busy = false }
+                  do { try await Hub.dispatch(dir); submitted = true; status = "GitHub 已接受请求，发送结果请查看运行记录。" } catch { status = friendly(error) }
+              }
+          }
+          
+          struct PictureView: View {
+              let dir, file: Entry
+              @State private var picture: CGImage?
+              @State private var error: String?
+              var body: some View {
+                  Group {
+                      if let picture { Image(decorative: picture, scale: 1).resizable().scaledToFit().accessibilityLabel(file.name) }
+                      else if let error { Text(error) } else { ProgressView("加载预览…") }
+                  }.padding().navigationTitle(file.name).navigationBarTitleDisplayMode(.inline).task {
+                      do {
+                          let bytes = try await Hub.image(dir, file)
+                          let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: 1800]
+                          guard let source = CGImageSourceCreateWithData(bytes as CFData, nil), let thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { throw ConsoleError("图片格式无效。") }; picture = thumb
+                      } catch { self.error = friendly(error) }
+                  }
+              }
+          }
+          QQ_SWIFT_SOURCE
+          cat > ios/ConsoleKit/GitHub.swift <<'QQ_SWIFT_SOURCE'
+          import Foundation
+          import Security
+          
+          struct ConsoleError: LocalizedError {
+              let message: String
+              init(_ message: String) { self.message = message }
+              var errorDescription: String? { message }
+          }
+          
+          enum Vault {
+              private static let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "qq.console.github", kSecAttrAccount as String: "fine-grained"]
+              static func read() throws -> String? {
+                  var q = query
+                  q[kSecReturnData as String] = true
+                  var item: CFTypeRef?
+                  let status = SecItemCopyMatching(q as CFDictionary, &item)
+                  if status == errSecItemNotFound { return nil }
+                  guard status == errSecSuccess, let data = item as? Data, let token = String(data: data, encoding: .utf8) else { throw ConsoleError("无法读取钥匙串，请解锁设备后重试。") }
+                  return token
+              }
+              static func save(_ token: String) throws {
+                  guard token.range(of: #"^(github_pat_|ghp_)[A-Za-z0-9_]+$"#, options: .regularExpression) != nil else { throw ConsoleError("请输入有效的 GitHub 个人访问令牌。") }
+                  let fields: [String: Any] = [kSecValueData as String: Data(token.utf8), kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
+                  var status = SecItemUpdate(query as CFDictionary, fields as CFDictionary)
+                  if status == errSecItemNotFound { status = SecItemAdd(query.merging(fields) { _, new in new } as CFDictionary, nil) }
+                  guard status == errSecSuccess else { throw ConsoleError("钥匙串保存失败。") }
+              }
+              static func erase() throws {
+                  let status = SecItemDelete(query as CFDictionary)
+                  guard [errSecSuccess, errSecItemNotFound].contains(status) else { throw ConsoleError("钥匙串移除失败。") }
+              }
+          }
+          
+          struct Entry: Decodable, Identifiable { let name, type, sha: String; let size: Int; var id: Data { Data(name.utf8) } }
+          struct Run: Decodable, Identifiable { let id, run_number, run_attempt: Int; let status, created_at: String; let conclusion: String? }
+          struct Step: Decodable, Identifiable { let number: Int; let name, status: String; let conclusion: String?; var id: Int { number } }
+          struct Job: Decodable, Identifiable { let id: Int; let steps: [Step] }
+          private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+              func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+          }
+          
+          enum Hub {
+              static let repo = "Zerolost/comic-auto-signin"
+              static let workflow = "qq-mail.yml"
+              private static let root = URL(string: "https://api.github.com/repos/\(repo)")!
+              private static let session: URLSession = {
+                  let c = URLSessionConfiguration.ephemeral
+                  c.urlCache = nil; c.httpCookieStorage = nil; c.urlCredentialStorage = nil
+                  c.timeoutIntervalForRequest = 25
+                  return URLSession(configuration: c, delegate: NoRedirect(), delegateQueue: nil)
+              }()
+              static func web(_ run: Run, job: Job? = nil) -> URL {
+                  let base = URL(string: "https://github.com/\(repo)/actions/runs/\(run.id)")!
+                  return job.map { base.appendingPathComponent("job/\($0.id)") } ?? base
+              }
+              private static func request(_ path: [String], _ query: [URLQueryItem] = [], raw: Bool = false) throws -> URLRequest {
+                  guard let token = try Vault.read() else { throw ConsoleError("请先在连接页保存令牌。") }
+                  let url = path.reduce(root) { $0.appendingPathComponent($1) }
+                  var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+                  parts.queryItems = query.isEmpty ? nil : query
+                  var req = URLRequest(url: parts.url!)
+                  req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                  req.setValue(raw ? "application/vnd.github.raw+json" : "application/vnd.github+json", forHTTPHeaderField: "Accept")
+                  req.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+                  return req
+              }
+              private static func fetch(_ request: URLRequest, max: Int = 4_000_000, log: Bool = false) async throws -> Data {
+                  let (bytes, response) = try await session.bytes(for: request)
+                  guard let http = response as? HTTPURLResponse else { throw ConsoleError("GitHub 响应无效。") }
+                  if log && http.statusCode == 302, let location = http.value(forHTTPHeaderField: "Location"), let url = URL(string: location), url.scheme == "https", url.host != nil, url.user == nil, url.password == nil {
+                      // Signed GitHub download URL receives a fresh request without Authorization.
+                      return try await fetch(URLRequest(url: url), max: max)
+                  }
+                  guard (200..<300).contains(http.statusCode) else { throw ConsoleError("GitHub HTTP \(http.statusCode)。请检查仓库授权、资源状态或 API 限额。") }
+                  guard response.expectedContentLength <= Int64(max) else { throw ConsoleError("内容过大，无法在此预览。") }
+                  var data = Data()
+                  for try await byte in bytes { guard data.count < max else { throw ConsoleError("内容过大，无法在此预览。") }; data.append(byte) }
+                  return data
+              }
+              static func entries(_ path: [String]) async throws -> [Entry] {
+                  let data = try await fetch(request(["contents", "jobs"] + path, [.init(name: "ref", value: "main")]))
+                  let rows = try JSONDecoder().decode([Entry].self, from: data)
+                  guard rows.count < 1000 else { throw ConsoleError("目录达到 GitHub 列表上限，无法核实完整内容。") }
+                  return rows
+              }
+              static func directories() async throws -> [Entry] {
+                  try await entries([]).filter { $0.type == "dir" && !$0.name.hasPrefix(".") && !$0.name.hasPrefix("_") }
+              }
+              static func image(_ dir: Entry, _ file: Entry) async throws -> Data {
+                  guard file.size <= 12_000_000 else { throw ConsoleError("图片超过 12 MB。") }
+                  return try await fetch(request(["contents", "jobs", dir.name, "images", file.name], [.init(name: "ref", value: "main")], raw: true), max: 12_000_000)
+              }
+              static func dispatch(_ chosen: Entry) async throws {
+                  let name = chosen.name
+                  guard !name.isEmpty, name.trimmingCharacters(in: .whitespacesAndNewlines).utf8.elementsEqual(name.utf8), !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || CharacterSet.illegalCharacters.contains($0) }), !name.contains("/"), name.utf8.count <= 255 else { throw ConsoleError("目录名称会被工作流裁剪，已停止发送。") }
+                  struct Repo: Decodable { let default_branch: String }
+                  let repository = try JSONDecoder().decode(Repo.self, from: try await fetch(request([])))
+                  guard repository.default_branch == "main" else { throw ConsoleError("现有工作流还会读取默认分支，需确保默认分支为 main。") }
+                  struct WorkflowFile: Decodable { let sha: String }
+                  let workflowData = try await fetch(request(["contents", ".github", "workflows", workflow], [.init(name: "ref", value: "main")]))
+                  let definition = try JSONDecoder().decode(WorkflowFile.self, from: workflowData)
+                  guard definition.sha == "b2a09298cf26c8c3fd972184b2959b1ac4f35507" else { throw ConsoleError("工作流版本已改变，需重新核对其目录匹配规则。") }
+                  let sub = try await entries([name])
+                  guard sub.contains(where: { ($0.name == "images" && $0.type == "dir") || ($0.name == "text.md" && $0.type == "file") }) else { throw ConsoleError("该目录缺少 images 或 text.md。") }
+                  let matches = try await directories().filter { $0.name.utf8.starts(with: name.utf8) }
+                  guard matches.count == 1, let exact = matches.first, exact.id == chosen.id, exact.sha == chosen.sha else { throw ConsoleError("目录已变化或存在同前缀的目录。请刷新并选择唯一目录。") }
+                  var req = try request(["actions", "workflows", workflow, "dispatches"])
+                  req.httpMethod = "POST"; req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                  req.httpBody = try JSONSerialization.data(withJSONObject: ["ref": "main", "inputs": ["job": name, "limit": "1", "archive": false]])
+                  do { _ = try await fetch(req) } catch let e as ConsoleError { throw e } catch { throw ConsoleError("未收到 GitHub 确认。请先查看运行记录，再决定是否重试。") }
+              }
+              static func runs() async throws -> [Run] {
+                  struct Page: Decodable { let workflow_runs: [Run] }
+                  return try JSONDecoder().decode(Page.self, from: try await fetch(request(["actions", "workflows", workflow, "runs"], [.init(name: "per_page", value: "50")]))).workflow_runs
+              }
+              static func jobs(_ run: Run) async throws -> [Job] {
+                  struct Page: Decodable { let jobs: [Job] }
+                  return try JSONDecoder().decode(Page.self, from: try await fetch(request(["actions", "runs", String(run.id), "attempts", String(run.run_attempt), "jobs"]))).jobs
+              }
+              static func summary(_ job: Job) async throws -> [String] {
+                  let data = try await fetch(request(["actions", "jobs", String(job.id), "logs"]), log: true)
+                  let patterns = [(#"^待发 [0-9]+ 个目录："#, "已统计待发目录"), (#"^使用群 openid 来源："#, "已读取群标识来源"), (#"^⬆️ "#, "上传图片"), (#"^💬 已发送"#, "已发送一批图片"), (#"^成功发送："#, "已记录发送结果"), (#"^##\[error\]"#, "步骤报告错误")]
+                  var output: [String] = []
+                  for line in String(decoding: data, as: UTF8.self).components(separatedBy: .newlines) {
+                      let text = line.replacingOccurrences(of: #"^\d{4}-\d\d-\d\dT[0-9:.]+Z "#, with: "", options: .regularExpression)
+                      if let event = patterns.first(where: { text.range(of: $0.0, options: .regularExpression) != nil }) { output.append(event.1) }
+                      if output.count == 100 { break }
+                  }
+                  return output
+              }
+          }
+          QQ_SWIFT_SOURCE
+          cat > ios/ConsoleKit/History.swift <<'QQ_SWIFT_SOURCE'
+          import SwiftUI
+          
+          private func stateText(_ status: String?) -> String {
+              switch status {
+              case "success": return "成功"
+              case "failure": return "失败"
+              case "in_progress": return "运行中"
+              case "cancelled": return "已取消"
+              case "skipped": return "已跳过"
+              case "queued", "pending", "waiting", "requested": return "等待中"
+              case "timed_out": return "已超时"
+              case "action_required": return "需要操作"
+              case "completed": return "已结束"
+              default: return "其他状态"
+              }
+          }
+          
+          struct HistoryView: View {
+              @State private var runs: [Run] = []
+              @State private var message = "正在读取…"
+              var body: some View {
+                  List {
+                      Section("qq-mail.yml · 最近 50 次") {
+                          if runs.isEmpty { Text(message).foregroundStyle(.secondary) }
+                          ForEach(runs) { run in
+                              NavigationLink { RunView(run: run) } label: {
+                                  VStack(alignment: .leading, spacing: 4) {
+                                      Text("#\(run.run_number) · \(stateText(run.conclusion ?? run.status))")
+                                      if let date = ISO8601DateFormatter().date(from: run.created_at) { Text(date.formatted()).font(.caption).foregroundStyle(.secondary) }
+                                  }
+                              }
+                          }
+                      }
+                  }.navigationTitle("运行记录").refreshable { await reload() }.task { await reload() }
+              }
+              private func reload() async {
+                  do { runs = try await Hub.runs(); message = "没有运行记录。" } catch { runs = []; message = friendly(error) }
+              }
+          }
+          
+          private struct RunView: View {
+              let run: Run
+              @State private var jobs: [Job] = []
+              @State private var message = "正在读取步骤…"
+              private let names = ["Set up job", "Run actions/checkout@v4", "Run actions/setup-python@v5", "列出待发目录", "解析群 openid", "逐个发送", "归档已发送目录", "Post Run actions/setup-python@v5", "Post Run actions/checkout@v4", "Complete job"]
+              var body: some View {
+                  List {
+                      Section { Link(destination: Hub.web(run)) { Label("在 GitHub 查看完整日志", systemImage: "arrow.up.right.square") } }
+                      if jobs.isEmpty { Text(message).foregroundStyle(.secondary) }
+                      ForEach(jobs) { job in
+                          Section("尝试 \(run.run_attempt) · 作业 \(String(job.id))") {
+                              ForEach(job.steps) { step in
+                                  LabeledContent(names.contains(step.name) ? step.name : "步骤 \(step.number)", value: stateText(step.conclusion ?? step.status))
+                              }
+                              NavigationLink { LogView(run: run, job: job) } label: { Label("查看安全日志摘要", systemImage: "text.alignleft") }
+                          }
+                      }
+                  }.navigationTitle("运行 #\(run.run_number)").refreshable { await load() }.task { await load() }
+              }
+              private func load() async {
+                  do { jobs = try await Hub.jobs(run); message = "尚无步骤，稍后下拉刷新。" } catch { jobs = []; message = friendly(error) }
+              }
+          }
+          
+          private struct LogView: View {
+              let run: Run
+              let job: Job
+              @State private var events: [String] = []
+              @State private var message = "正在读取日志…"
+              var body: some View {
+                  List {
+                      Section { Link("打开作业完整日志", destination: Hub.web(run, job: job)) }
+                      Section {
+                          if events.isEmpty { Text(message).foregroundStyle(.secondary) }
+                          ForEach(events.indices, id: \.self) { i in Text(events[i]) }
+                      } header: { Text("已识别事件") } footer: { Text("仅显示工作流的已知事件类型，最多 100 条。完整输出由 GitHub 提供。") }
+                  }.navigationTitle("步骤日志").refreshable { await load() }.task { await load() }
+              }
+              private func load() async {
+                  do { events = try await Hub.summary(job); message = "该日志没有可展示的事件。" } catch { events = []; message = friendly(error) }
+              }
+          }
+          QQ_SWIFT_SOURCE
+          cat > ios/ConsoleKit/QQDirectPanel.swift <<'QQ_SWIFT_SOURCE'
+          import Foundation
+          import SwiftUI
+          import CryptoKit
+          import UniformTypeIdentifiers
+          
+          private enum QQFailure: LocalizedError {
+            case status(String)
+            var errorDescription: String? {
+              switch self { case .status(let detail): return detail }
+            }
+          }
+          
+          @MainActor private final class DirectBot: ObservableObject {
+            @Published var appID = ""
+            @Published var secret = ""
+            @Published var pairing = ""
+            @Published var bound = false
+            @Published var busy = false
+            @Published var logs: [String] = []
+            private var group = ""
+            private var socket: URLSessionWebSocketTask?
+            private var timeout: Task<Void, Never>?
+            private var sequence: Int?
+            private let session = URLSession(configuration: .ephemeral)
+          
+            func log(_ value: String) {
+              logs.insert(Date().formatted(date: .omitted, time: .standard) + "  " + value, at: 0)
+              logs = Array(logs.prefix(30))
+            }
+          
+            func request(_ path: String, _ body: [String: Any]?, _ token: String? = nil) async throws -> [String: Any] {
+              var req = URLRequest(url: URL(string: "https://api.bot.qq.com" + path)!)
+              req.timeoutInterval = 25
+              if let body {
+                req.httpMethod = "POST"
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.httpBody = try JSONSerialization.data(withJSONObject: body)
+              }
+              if let token { req.setValue("QQBot " + token, forHTTPHeaderField: "Authorization") }
+              let (data, response) = try await session.data(for: req)
+              let j = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+              let http = (response as? HTTPURLResponse)?.statusCode ?? 0
+              let code = j["err_code"] ?? j["code"] ?? 0
+              guard (200..<300).contains(http), String(describing: code) == "0" else {
+                throw QQFailure.status("QQ 接口 HTTP \(http)，错误码 \(code)")
+              }
+              return j
+            }
+          
+            func access() async throws -> String {
+              let j = try await request("/app/getAppAccessToken", ["appId": appID, "clientSecret": secret])
+              guard let token = j["access_token"] as? String else { throw QQFailure.status("鉴权失败，请检查机器人凭证") }
+              return token
+            }
+          
+            func write(_ ws: URLSessionWebSocketTask, _ payload: [String: Any]) async throws {
+              let bytes = try JSONSerialization.data(withJSONObject: payload)
+              try await ws.send(.string(String(decoding: bytes, as: UTF8.self)))
+            }
+          
+            func capture() async {
+              guard !busy else { return }; busy = true; bound = false; group = ""; sequence = nil
+              var heartbeat: Task<Void, Never>?
+              defer { heartbeat?.cancel(); timeout?.cancel(); socket?.cancel(with: .goingAway, reason: nil); socket = nil; pairing = ""; busy = false }
+              do {
+                let token = try await access()
+                let j = try await request("/gateway", nil, token)
+                guard let s = j["url"] as? String, let url = URL(string: s), url.scheme == "wss", let host = url.host, host.hasSuffix(".qq.com") else { throw QQFailure.status("QQ 未提供可用的事件连接地址") }
+                let ws = session.webSocketTask(with: url); socket = ws; ws.resume()
+                timeout = Task { try? await Task.sleep(nanoseconds: 120_000_000_000); if !Task.isCancelled { ws.cancel(with: .goingAway, reason: nil) } }
+                while true {
+                  let msg = try await ws.receive(); let data: Data
+                  switch msg { case .string(let text): data = Data(text.utf8); case .data(let raw): data = raw; @unknown default: continue }
+                  guard let event = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                  if let n = event["s"] as? Int { sequence = n }
+                  let d = event["d"] as? [String: Any] ?? [:]
+                  switch event["op"] as? Int {
+                  case 10:
+                    try await write(ws, ["op": 2, "d": ["token": "QQBot " + token, "intents": 1 << 25, "shard": [0, 1], "properties": ["$os": "ios"]] as [String: Any]])
+                    let interval = max(1000, min(120000, d["heartbeat_interval"] as? Int ?? 45000))
+                    heartbeat = Task { while !Task.isCancelled { try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000); guard !Task.isCancelled else { break }; let seq: Any = self.sequence.map { $0 as Any } ?? NSNull(); try? await self.write(ws, ["op": 1, "d": seq]) } }
+                  case 0:
+                    if event["t"] as? String == "READY" { pairing = "绑定 \(Int.random(in: 100000...999999))"; log("已连接，等待测试群发送配对指令") }
+                    if event["t"] as? String == "GROUP_AT_MESSAGE_CREATE", !pairing.isEmpty,
+                       (d["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix(pairing) == true,
+                       let gid = d["group_openid"] as? String, !gid.isEmpty, gid.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }) {
+                      group = gid; bound = true; log("已识别测试群，可以试发"); return
+                    }
+                  case 7, 9: throw QQFailure.status("QQ 已关闭事件会话，请检查群事件权限后重连")
+                  default: continue
+                  }
+                }
+              } catch { log(error.localizedDescription) }
+            }
+          
+            func send() async {
+              guard bound, !busy else { return }; busy = true; defer { busy = false }
+              do { let token = try await access(); let j = try await request("/v2/groups/" + group + "/messages", ["msg_type": 0, "content": "QQ 群发图控制台 · 测试消息"], token); guard j["id"] != nil else { throw QQFailure.status("QQ 未返回消息编号，请在群内核对") }; log("QQ 已确认接收测试消息") } catch { log(error.localizedDescription) }
+            }
+            func sendFiles(_ files: [URL]) async {
+              guard bound, !busy, (1...5).contains(files.count) else { return }
+              busy = true
+              defer { busy = false }
+              do {
+                let token = try await access()
+                var blocks: [String] = []
+                for (index, file) in files.enumerated() {
+                  let allowed = file.startAccessingSecurityScopedResource()
+                  defer { if allowed { file.stopAccessingSecurityScopedResource() } }
+                  let mime = ["png":"image/png", "jpg":"image/jpeg", "jpeg":"image/jpeg", "webp":"image/webp", "gif":"image/gif"][file.pathExtension.lowercased()]
+                  guard let mime, let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize, (1...10_485_760).contains(size) else { throw QQFailure.status("图片格式不支持或超过 10 MB") }
+                  let data = try Data(contentsOf: file)
+                  let md5 = Insecure.MD5.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                  let sha1 = Insecure.SHA1.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                  let prep = try await request("/v2/media-images/prepare", ["file_name": file.lastPathComponent, "file_size": data.count, "content_type": mime, "md5": md5, "sha1": sha1], token)
+                  guard let id = prep["upload_id"] as? String, let raw = prep["presigned_url"] as? String, let url = URL(string: raw), url.scheme == "https" else { throw QQFailure.status("QQ 未返回上传地址") }
+                  var put = URLRequest(url: url)
+                  put.httpMethod = "PUT"
+                  put.setValue(mime, forHTTPHeaderField: "Content-Type")
+                  let (_, response) = try await session.upload(for: put, from: data)
+                  guard let code = (response as? HTTPURLResponse)?.statusCode, (200..<300).contains(code) else { throw QQFailure.status("图片上传失败") }
+                  let done = try await request("/v2/media-images/complete", ["upload_id": id, "md5": md5], token)
+                  guard let ref = done["url"] as? String, ref.hasPrefix("qqbot-media://image/") else { throw QQFailure.status("QQ 未返回素材引用") }
+                  let stem = file.deletingPathExtension().lastPathComponent
+                  let label = stem.replacingOccurrences(of: "[\\\\`*_{}\\[\\]()<>#!|~\r\n]", with: " ", options: .regularExpression)
+                  blocks.append("**\(label)**\n\n![图片\(index + 1)](\(ref))")
+                  log("第 \(index + 1) 张图片上传成功")
+                }
+                let sent = try await request("/v2/groups/" + group + "/messages", ["msg_type": 2, "markdown": ["content": blocks.joined(separator: "\n\n")]], token)
+                guard sent["id"] != nil else { throw QQFailure.status("未收到消息编号，请在群内核对") }; log("QQ 已接收 \(files.count) 张图及配文")
+              } catch { log(error.localizedDescription) }
+            }
+            func close() { socket?.cancel(with: .goingAway, reason: nil) }
+          }
+          
+          struct QQDirectPanel: View {
+            @StateObject private var bot = DirectBot()
+            @State private var confirm = false
+            @State private var choosing = false
+            @State private var files: [URL] = []
+            var body: some View {
+              Form {
+                Section("官方机器人") {
+                  TextField("AppID", text: $bot.appID).keyboardType(.numberPad)
+                  SecureField("AppSecret", text: $bot.secret).textInputAutocapitalization(.never).autocorrectionDisabled()
+                }.disabled(bot.busy || bot.bound)
+                Section("绑定测试群") {
+                  Button(bot.busy ? "连接中…" : "接收群内配对指令") { Task { await bot.capture() } }.disabled(bot.busy || bot.appID.isEmpty || bot.secret.isEmpty)
+                  if !bot.pairing.isEmpty {
+                    Text("用另一台 iPhone 在目标群 @机器人，然后发送下面的指令。请保持本页打开。")
+                    Text(bot.pairing).font(.title2.monospaced()).textSelection(.enabled)
+                  }
+                  if bot.bound { Label("测试群已绑定", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+                }
+                Section("测试发送") {
+                  Button("从文件选择图片（最多 5 张）") { choosing = true }.disabled(!bot.bound || bot.busy)
+                  ForEach(files, id: \.self) { url in Text(url.lastPathComponent).font(.footnote) }
+                  Button(files.isEmpty ? "向刚绑定的群发送测试消息" : "发送所选图文") { confirm = true }.disabled(!bot.bound || bot.busy)
+                }
+                Section("本次连接记录") { ForEach(Array(bot.logs.enumerated()), id: \.offset) { pair in Text(pair.element).font(.footnote.monospaced()) } }
+              }
+              .navigationTitle("机器人试发")
+              .fileImporter(isPresented: $choosing, allowedContentTypes: [.png, .jpeg, .gif, .webP], allowsMultipleSelection: true) { result in
+                if case .success(let selection) = result {
+                  if selection.count > 5 { bot.log("请选择 1–5 张图片") } else { files = selection }
+                }
+              }
+              .confirmationDialog(files.isEmpty ? "发送测试文字到刚绑定的群？" : "向刚绑定的群发送 \(files.count) 张图片及文件名配文？", isPresented: $confirm) { Button("发送") { Task { if files.isEmpty { await bot.send() } else { await bot.sendFiles(files) } } } }
+              .onDisappear { bot.close() }
+            }
+          }
+          QQ_SWIFT_SOURCE
+          xcodebuild -version
+          sdk=$(xcrun --sdk iphoneos --show-sdk-path)
+          version=$(xcrun --sdk iphoneos --show-sdk-version)
+          [[ ${version%%.*} -ge 26 ]]
+          app=Payload/QQBotConsole.app
+          mkdir -p "$app"
+          xcrun --sdk iphoneos swiftc -sdk "$sdk" -target arm64-apple-ios26.0 \
+            -swift-version 5 -O -parse-as-library -module-name QQBotConsole \
+            ios/ConsoleKit/*.swift -o "$app/QQBotConsole"
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+          info = dict(CFBundleIdentifier='com.zerolost.qqbotconsole',
+                      CFBundleExecutable='QQBotConsole', CFBundleName='QQBotConsole',
+                      CFBundleDisplayName='QQ 群发图控制台', CFBundlePackageType='APPL',
+                      CFBundleInfoDictionaryVersion='6.0', CFBundleShortVersionString='1.0',
+                      CFBundleVersion='1', MinimumOSVersion='26.0', LSRequiresIPhoneOS=True,
+                      CFBundleSupportedPlatforms=['iPhoneOS'], UIDeviceFamily=[1, 2],
+                      UILaunchScreen={}, UIApplicationSceneManifest={'UIApplicationSupportsMultipleScenes': False},
+                      UISupportedInterfaceOrientations=['UIInterfaceOrientationPortrait', 'UIInterfaceOrientationLandscapeLeft', 'UIInterfaceOrientationLandscapeRight'])
+          Path('Payload/QQBotConsole.app/Info.plist').write_bytes(plistlib.dumps(info))
+          PY
+          plutil -lint "$app/Info.plist"
+          xcrun lipo -verify_arch arm64 "$app/QQBotConsole"
+          xcrun vtool -show-build "$app/QQBotConsole"
+          zip -qr QQBotConsole.ipa Payload
+          unzip -t QQBotConsole.ipa
+          shasum -a 256 QQBotConsole.ipa > QQBotConsole.ipa.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QQBotConsole-unsigned
+          path: |
+            QQBotConsole.ipa
+            QQBotConsole.ipa.sha256
+          if-no-files-found: error
+          compression-level: 0
