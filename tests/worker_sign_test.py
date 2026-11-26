@@ -21,8 +21,7 @@ def expected_signature(secret, event_ts, plain_token):
     while len(seed) < 32:
         seed += seed
     # 官方 go 实现是 sha256(seed) → 32 字节 ed25519 种子
-    import hashlib
-    sk = Ed25519PrivateKey.from_private_bytes(hashlib.sha256(seed[:32].encode()).digest())
+    sk = Ed25519PrivateKey.from_private_bytes(seed[:32].encode())
     return sk.sign((event_ts + plain_token).encode()).hex()
 
 

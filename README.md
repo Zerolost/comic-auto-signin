@@ -49,7 +49,8 @@ jobs/
 
 `group_openid` 只能在「群里 @ 机器人」的事件里拿到，所以配了一个 Cloudflare Worker 当抓取器：
 
-1. 开放平台 → 开发设置 → 回调地址填：`https://qqbot-openid.zerolost1014.workers.dev/callback`（端口 80/443 兼容），勾选事件 `GROUP_AT_MESSAGE_CREATE`
+0. Worker 先加一个 Secret `QQ_SECRET`（= 机器人 AppSecret），否则回调验签会 1102
+1. 开放平台 → 开发设置 → 回调地址填：`https://qqbot-openid.zerolost1014.workers.dev/callback`，勾选事件 `GROUP_AT_MESSAGE_CREATE`
 2. 等平台回调验证通过（Worker 用 QQ_SECRET 做 ed25519 签名，签名密钥来自 Worker Secret `QQ_SECRET`）
 3. 开放平台 → 沙箱/测试群配置**机器人要用的 AppID**（同一个 AppID 的 openid 才通用）
 4. 在群里 @ 机器人 一句话 → Worker 把 `group_openid` 写进本仓库 `state/group_openid.json`

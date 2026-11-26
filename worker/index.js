@@ -1,14 +1,13 @@
 // QQ 机器人事件抓取器：收到群 @ 消息就把 group_openid 记下来，供 Actions 自动读取
 const enc = new TextEncoder();
 
-async function gib(x, name) {
-  return new Uint8Array(await crypto.subtle.digest(name || "SHA-256", enc.encode(String(x))));
-}
 
+
+// 官方做法 seed 是「secret 自身重复到 ≥32 字符后取前 32 个字符」，不是哈希
 async function seedFor(secret) {
   let seed = secret;
   while (seed.length < 32) seed += seed;
-  return await gib(seed, "SHA-256"); // 32 字节种子，保证合法
+  return seed.slice(0, 32);
 }
 
 function hex(buf) {
@@ -18,16 +17,11 @@ function hex(buf) {
 // 用 secret 派生 ed25519 私钥做签名（供开放平台校验回调地址）
 async function sign(secret, msg) {
   const seed = await seedFor(secret);
-  let key;
-  try {
-    // Workers 支持 raw Ed25519；Node 的 webcrypto 只吃 pkcs8，按需兜底
-    key = await crypto.subtle.importKey("raw", seed, { name: "Ed25519" }, false, ["sign"]);
-  } catch (e) {
-    const pkcs8 = new Uint8Array(48);
-    pkcs8.set([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
-    pkcs8.set(seed, 16);
-    key = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "Ed25519" }, false, ["sign"]);
-  }
+  // 统一用 PKCS#8 包裹 32 字节种子，Workers 与 Node webcrypto 都支持
+  const pkcs8 = new Uint8Array(48);
+  pkcs8.set([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20]);
+  pkcs8.set(enc.encode(seed), 16);
+  const key = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "Ed25519" }, false, ["sign"]);
   return hex(await crypto.subtle.sign("Ed25519", key, enc.encode(msg)));
 }
 
