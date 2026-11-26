@@ -6,7 +6,7 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -527,6 +527,8 @@ jobs:
             }
           }
           QQ_SWIFT_SOURCE
+          xcodes=(/Applications/Xcode_26*.app)
+          export DEVELOPER_DIR="${xcodes[0]}/Contents/Developer"
           xcodebuild -version
           sdk=$(xcrun --sdk iphoneos --show-sdk-path)
           version=$(xcrun --sdk iphoneos --show-sdk-version)
