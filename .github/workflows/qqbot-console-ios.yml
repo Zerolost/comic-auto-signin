@@ -552,11 +552,11 @@ jobs:
           Path('Payload/QQBotConsole.app/Info.plist').write_bytes(plistlib.dumps(info))
           PY
           plutil -lint "$app/Info.plist"
-          xcrun lipo -verify_arch arm64 "$app/QQBotConsole"
+          xcrun lipo "$app/QQBotConsole" -verify_arch arm64
           xcrun vtool -show-build "$app/QQBotConsole"
           zip -qr QQBotConsole.ipa Payload
           unzip -t QQBotConsole.ipa
-          shasum -a 256 QQBotConsole.ipa > QQBotConsole.ipa.sha256
+          shasum -a 256 QQBotConsole.ipa | tee QQBotConsole.ipa.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: QQBotConsole-unsigned
