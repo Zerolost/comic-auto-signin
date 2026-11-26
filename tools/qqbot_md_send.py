@@ -126,7 +126,11 @@ def list_media(token):
         ids += [i["image_id"] for i in (r.get("images") or [])]
         cursor = r.get("next_cursor")
         if not cursor:
-            return r.get("total", len(ids)), ids
+            try:
+                total = int(r.get("total", len(ids)))
+            except (TypeError, ValueError):
+                total = len(ids)
+            return max(total, len(ids)), ids
 
 
 def cleanup_media(token, keep):

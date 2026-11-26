@@ -34,7 +34,7 @@ class H(http.server.BaseHTTPRequestHandler):
         CALLS.append(("GET", self.path))
         path = urllib.parse.urlparse(self.path).path
         if path == "/v2/media-images":
-            return self._json({"images": MEDIA, "next_cursor": "", "total": len(MEDIA)})
+            return self._json({"images": MEDIA, "next_cursor": "", "total": str(len(MEDIA))})
         return self._json({"code": 404}, 404)
 
     def do_DELETE(self):
