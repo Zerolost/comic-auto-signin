@@ -21,6 +21,7 @@ on:
 permissions:
   contents: write
 
+# 并发：同一时间只跑一个，避免重复刷屏
 concurrency:
   group: qqbot
   cancel-in-progress: false
