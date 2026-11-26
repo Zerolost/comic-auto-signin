@@ -1,4 +1,4 @@
-name: QQ 群发图
+name: QQ 群发图 (v2)
 
 # 只手动触发：仓库 Actions 页面点 “Run workflow”
 on:
