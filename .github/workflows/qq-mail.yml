@@ -81,12 +81,44 @@ jobs:
           PY
           echo "count=$(python3 -c "import json;print(len(json.load(open('jobs.json'))))")" >> "$GITHUB_OUTPUT"
 
+      - name: 解析群 openid
+        id: gid
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          QQ_GROUP_OPENID: ${{ secrets.QQ_GROUP_OPENID }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+
+          def state_gid():
+              req = urllib.request.Request(
+                  "https://api.github.com/repos/%s/contents/state/group_openid.json" % os.environ["GITHUB_REPOSITORY"],
+                  headers={"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                           "Accept": "application/vnd.github.raw", "User-Agent": "qqbot"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return (json.loads(r.read() or b"{}") or {}).get("group_openid")
+              except Exception:
+                  return None
+
+          picked, source = os.environ.get("QQ_GROUP_OPENID"), "secret"
+          raw = state_gid()
+          # 状态文件里的 openid 是本 AppID 实测过的，优先信任
+          if raw and raw != picked:
+              picked, source = raw, "state/group_openid.json"
+          print("使用群 openid 来源：%s" % source)
+          if not picked:
+              raise SystemExit("没有可用的 group_openid：先在群里 @ 机器人，让抓取器记录")
+          open("gid.txt", "w").write(picked)
+          PY
+          echo "gid=$(cat gid.txt)" >> "$GITHUB_OUTPUT"
+
       - name: 逐个发送
         if: steps.pick.outputs.count != '0'
         env:
           QQ_APP_ID: ${{ secrets.QQ_APP_ID }}
           QQ_APP_SECRET: ${{ secrets.QQ_APP_SECRET }}
-          QQ_GROUP_OPENID: ${{ secrets.QQ_GROUP_OPENID }}
+          QQ_GROUP_OPENID: ${{ steps.gid.outputs.gid }}
         run: |
           set -e
           python3 - <<'PY'

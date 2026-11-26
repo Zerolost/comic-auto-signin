@@ -1,0 +1,9 @@
+name = "qqbot-openid"
+main = "index.js"
+compatibility_date = "2025-11-01"
+
+# 事件抓取器：不改动其它 Worker，独立部署
+[vars]
+QQ_APP_ID = ""
+GH_REPO = "Zerolost/comic-auto-signin"
+STATE_FILE = "state/group_openid.json"

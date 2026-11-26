@@ -44,6 +44,19 @@ jobs/
    - `QQ_APP_SECRET`
    - `QQ_GROUP_OPENID`
 
+
+## 首次配置：自动抓 group_openid
+
+`group_openid` 只能在「群里 @ 机器人」的事件里拿到，所以配了一个 Cloudflare Worker 当抓取器：
+
+1. 开放平台 → 开发设置 → 回调地址填：`https://qqbot-openid.zerolost1014.workers.dev/callback`（端口 80/443 兼容），勾选事件 `GROUP_AT_MESSAGE_CREATE`
+2. 等平台回调验证通过（Worker 用 QQ_SECRET 做 ed25519 签名，签名密钥来自 Worker Secret `QQ_SECRET`）
+3. 开放平台 → 沙箱/测试群配置**机器人要用的 AppID**（同一个 AppID 的 openid 才通用）
+4. 在群里 @ 机器人 一句话 → Worker 把 `group_openid` 写进本仓库 `state/group_openid.json`
+5. 下次跑 workflow，若 Secret `QQ_GROUP_OPENID` 为空或与状态文件不同，会自动换成最新抓到的那个
+
+Worker 源码在 `worker/index.js`，独立部署为 `qqbot-openid`，不影响其它 Worker。
+
 ## 限制（官方规则）
 
 - 走 Markdown 消息（`msg_type=2`）+ **素材库**（`/v2/media-images/*`）：图片先上传平台拿 `qqbot-media://` 引用，再由平台转存，首图或过期后会自动重新转存；因此不依赖任何公网 URL
