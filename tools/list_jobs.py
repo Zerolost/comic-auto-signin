@@ -24,17 +24,22 @@ def api(path, method="GET", body=None):
         return json.loads(raw) if raw else None
 
 
-def main():
-    repo = os.environ["GITHUB_REPOSITORY"]
-    prefix = (sys.argv[1] if len(sys.argv) > 1 else "").strip().strip("/")
-    branch = os.environ.get("GITHUB_REF_NAME", "main")
-    out = []
+def fetch_listing(repo, branch):
+    # 目录不存在时 API 返回 404，按空处理
     try:
-        listing = api(f"/repos/{repo}/contents/jobs?ref={urllib.parse.quote(branch)}")
+        data = api(f"/repos/{repo}/contents/jobs?ref={urllib.parse.quote(branch)}")
     except Exception as e:
         print(f"jobs/ 目录读取失败：{e}", file=sys.stderr)
-        listing = []
-    for item in listing or []:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def main():
+    repo = os.environ["GITHUB_REPOSITORY"]
+    prefix = os.environ.get("JOB_FILTER", "").strip().strip("/")
+    branch = os.environ.get("GITHUB_REF_NAME") or os.environ.get("GITHUB_REF", "refs/heads/main").replace("refs/heads/", "")
+    out = []
+    for item in fetch_listing(repo, branch):
         if item.get("type") != "dir":
             continue
         name = item["name"]
@@ -44,11 +49,11 @@ def main():
             continue
         has = set()
         try:
-            for f in api(f"/repos/{repo}/contents/jobs/{name}") or []:
+            for f in api(f"/repos/{repo}/contents/jobs/{urllib.parse.quote(name)}") or []:
                 has.add(f["name"])
         except Exception:
             pass
-        if not ({"text.md", "images.txt"} & has) and not has:
+        if "images" not in has and "text.md" not in has:
             continue
         out.append(name)
     jobs = sorted(out)

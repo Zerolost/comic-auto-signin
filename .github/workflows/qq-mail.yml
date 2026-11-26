@@ -42,7 +42,42 @@ jobs:
           JOB_FILTER: ${{ inputs.job }}
           JOB_LIMIT: ${{ inputs.limit }}
         run: |
-          python3 tools/list_jobs.py | python3 tools/trim_jobs.py
+          python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tok = os.environ["GITHUB_TOKEN"]
+
+          def api(path):
+              req = urllib.request.Request("https://api.github.com" + path,
+                  headers={"Authorization": "Bearer " + tok,
+                           "Accept": "application/vnd.github+json",
+                           "User-Agent": "qq-group-poster"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return json.loads(r.read() or b"[]")
+              except Exception as e:
+                  print("读取出错:", path, e)
+                  return []
+
+          listing = api("/repos/%s/contents/jobs?ref=main" % repo)
+          jobs = []
+          for it in listing if isinstance(listing, list) else []:
+              name = it.get("name", "")
+              if it.get("type") != "dir" or name.startswith((".", "_")):
+                  continue
+              sub = api("/repos/%s/contents/jobs/%s" % (repo, urllib.parse.quote(name)))
+              files = {f.get("name") for f in sub} if isinstance(sub, list) else set()
+              if "images" in files or "text.md" in files:
+                  jobs.append(name)
+          flt = os.environ.get("JOB_FILTER", "").strip().strip("/")
+          if flt:
+              jobs = [j for j in jobs if j == flt or j.startswith(flt)]
+          lim = os.environ.get("JOB_LIMIT", "").strip()
+          if lim.isdigit() and int(lim) > 0:
+              jobs = jobs[: int(lim)]
+          print("待发 %d 个目录：%s" % (len(jobs), jobs))
+          open("jobs.json", "w").write(json.dumps(jobs, ensure_ascii=False))
+          PY
           echo "count=$(python3 -c "import json;print(len(json.load(open('jobs.json'))))")" >> "$GITHUB_OUTPUT"
 
       - name: 逐个发送
@@ -53,24 +88,37 @@ jobs:
           QQ_GROUP_OPENID: ${{ secrets.QQ_GROUP_OPENID }}
         run: |
           set -e
-          for job in $(python3 -c "import json;print(' '.join(json.load(open('jobs.json'))))"); do
-            echo "::group::发送 $job"
-            python3 tools/qqbot_md_send.py --job "jobs/$job"
-            echo "$job" >> sent.txt
-            echo "::endgroup::"
-            sleep 15
-          done
+          python3 - <<'PY'
+          import json, subprocess, time
+          jobs = json.load(open("jobs.json"))
+          done = []
+          for job in jobs:
+              print("::group::发送 " + job, flush=True)
+              r = subprocess.run(["python3", "tools/qqbot_md_send.py", "--job", "jobs/" + job])
+              print("::endgroup::", flush=True)
+              if r.returncode == 0:
+                  done.append(job)
+              else:
+                  print("::error::" + job + " 发送失败，停止后续（避免刷屏）", flush=True)
+                  break
+              time.sleep(15)
+          open("sent.txt", "w").write("\n".join(done))
+          print("成功发送：%s" % done)
+          if not done:
+              raise SystemExit(1)
+          PY
 
       - name: 归档已发送目录
         if: steps.pick.outputs.count != '0' && inputs.archive
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          [ -f sent.txt ] || exit 0
+          [ -s sent.txt ] || exit 0
           slot=$(date -u +%Y%m%d-%H%M%S)
-          while read -r job; do
+          while IFS= read -r job; do
             [ -n "$job" ] || continue
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/contents/jobs/$job" \
-              -f message="chore(jobs): 归档 $slot/$job" -f branch="${GITHUB_REF_NAME}" \
+            path=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1]))" "jobs/$job")
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/contents/$path" \
+              -f message="chore(jobs): 归档 $slot/$job" -f branch="main" \
               && echo "已归档 jobs/$job"
           done < sent.txt
