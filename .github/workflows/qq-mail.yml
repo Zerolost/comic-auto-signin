@@ -55,7 +55,7 @@ jobs:
           set -e
           for job in $(python3 -c "import json;print(' '.join(json.load(open('jobs.json'))))"); do
             echo "::group::发送 $job"
-            python3 tools/qqbot_group_send.py --job "jobs/$job"
+            python3 tools/qqbot_md_send.py --job "jobs/$job"
             echo "$job" >> sent.txt
             echo "::endgroup::"
             sleep 15
