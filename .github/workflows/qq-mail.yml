@@ -1,23 +1,19 @@
-name: QQ 邮箱推送图片
+name: QQ 群发图
 
-# 只手动触发：在仓库 Actions 页面点 “Run workflow”
+# 只手动触发：仓库 Actions 页面点 “Run workflow”
 on:
   workflow_dispatch:
     inputs:
       job:
-        description: '要发的 job 名（jobs/ 下的目录名，可填前缀，留空=发全部待发）'
+        description: '要发的目录名（jobs/ 下的名字，可填前缀；留空=全部待发）'
         required: false
         default: ''
-      subject:
-        description: '邮件标题（留空=用 job 名）'
-        required: false
-        default: ''
-      to:
-        description: '收件 QQ 邮箱（留空=仓库变量 QQMAIL_TO）'
+      limit:
+        description: '最多发几个目录（留空=不限）'
         required: false
         default: ''
       archive:
-        description: '发完把 job 目录归档到 jobs/_sent'
+        description: '发完把目录归档到 jobs/_sent'
         type: boolean
         required: false
         default: true
@@ -26,7 +22,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: qqmail
+  group: qqbot
   cancel-in-progress: false
 
 jobs:
@@ -39,43 +35,31 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 列出待发 job
+      - name: 列出待发目录
         id: pick
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          JOB_FILTER: ${{ inputs.job }}
+          JOB_LIMIT: ${{ inputs.limit }}
         run: |
-          python3 tools/list_jobs.py "${{ inputs.job }}" | tee jobs.json
-          count=$(python3 -c "import json;print(len(json.load(open('jobs.json'))['jobs']))")
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          if [ "$count" = "0" ]; then
-            echo "::notice::没有待发内容（jobs/ 下没有匹配的目录，或已在 _sent 里归档）"
-          fi
+          python3 tools/list_jobs.py | python3 tools/trim_jobs.py
+          echo "count=$(python3 -c "import json;print(len(json.load(open('jobs.json'))))")" >> "$GITHUB_OUTPUT"
 
-      - name: 逐条发送
+      - name: 逐个发送
         if: steps.pick.outputs.count != '0'
         env:
-          QQMAIL_USER: ${{ secrets.QQMAIL_USER }}
-          QQMAIL_AUTH_CODE: ${{ secrets.QQMAIL_AUTH_CODE }}
-          QQMAIL_TO: ${{ secrets.QQMAIL_TO }}
-          MAX_IMAGES: ${{ vars.QQMAIL_MAX_IMAGES }}
+          QQ_APP_ID: ${{ secrets.QQ_APP_ID }}
+          QQ_APP_SECRET: ${{ secrets.QQ_APP_SECRET }}
+          QQ_GROUP_OPENID: ${{ secrets.QQ_GROUP_OPENID }}
         run: |
           set -e
-          failed=0
-          for job in $(python3 -c "import json;print(' '.join(json.load(open('jobs.json'))['jobs']))"); do
-            subj="${{ inputs.subject }}"
-            [ -n "$subj" ] || subj="$job"
-            [ $failed -eq 0 ] || subj="$subj（续）"
+          for job in $(python3 -c "import json;print(' '.join(json.load(open('jobs.json'))))"); do
             echo "::group::发送 $job"
-            if python3 tools/qqmail.py --job "jobs/$job" --subject "$subj" --to "${{ inputs.to }}"; then
-              echo "$job" >> sent.txt
-            else
-              failed=1
-              echo "::error::发送 $job 失败"
-            fi
+            python3 tools/qqbot_group_send.py --job "jobs/$job"
+            echo "$job" >> sent.txt
             echo "::endgroup::"
-            sleep 5
+            sleep 15
           done
-          [ $failed -eq 0 ]
 
       - name: 归档已发送目录
         if: steps.pick.outputs.count != '0' && inputs.archive
@@ -83,12 +67,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           [ -f sent.txt ] || exit 0
-          owner="${GITHUB_REPOSITORY%%/*}"
-          repo="${GITHUB_REPOSITORY#*/}"
           slot=$(date -u +%Y%m%d-%H%M%S)
           while read -r job; do
             [ -n "$job" ] || continue
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/contents/jobs/$job" \
-              -f message="chore(jobs): 归档 $slot/$job" -f branch="$GITHUB_REF_NAME" \
+              -f message="chore(jobs): 归档 $slot/$job" -f branch="${GITHUB_REF_NAME}" \
               && echo "已归档 jobs/$job"
           done < sent.txt

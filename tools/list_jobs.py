@@ -51,7 +51,9 @@ def main():
         if not ({"text.md", "images.txt"} & has) and not has:
             continue
         out.append(name)
-    print(json.dumps({"jobs": sorted(out)}, ensure_ascii=False))
+    jobs = sorted(out)
+    print(f"jobs/ 下待发 {len(jobs)} 个：{jobs}", file=sys.stderr)
+    print(json.dumps(jobs, ensure_ascii=False))
 
 
 if __name__ == "__main__":
