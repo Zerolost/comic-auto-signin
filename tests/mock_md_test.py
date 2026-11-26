@@ -22,9 +22,28 @@ def png(w, h, c):
     return b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + ch(b"IDAT", zlib.compress(raw, 9)) + ch(b"IEND", b"")
 
 
+MEDIA = [{"image_id": "old%d" % i, "url": "qqbot-media://image/v1/old%d" % i,
+          "file_name": "old%d.png" % i} for i in range(99)]
+
+
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
+
+    def do_GET(self):
+        CALLS.append(("GET", self.path))
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/v2/media-images":
+            return self._json({"images": MEDIA, "next_cursor": "", "total": len(MEDIA)})
+        return self._json({"code": 404}, 404)
+
+    def do_DELETE(self):
+        CALLS.append(("DELETE", self.path))
+        iid = self.path.split("/")[-2]
+        before = len(MEDIA)
+        MEDIA[:] = [m for m in MEDIA if m["image_id"] != iid]
+        assert len(MEDIA) == before - 1, "删除的 image_id 必须存在"
+        return self._json({})
 
     def _json(self, obj, code=200):
         b = json.dumps(obj).encode()
@@ -48,8 +67,11 @@ class H(http.server.BaseHTTPRequestHandler):
         if path == "/v2/media-images/prepare":
             assert d["content_type"] == "image/png" and d["file_name"].endswith(".png")
             assert len(d["md5"]) == 32 and len(d["sha1"]) == 40 and d["file_size"] > 0
+            assert len(MEDIA) < 100, "超过 100 张应被清理"
             uid = "up%d" % len(STORE)
             STORE[uid] = {"name": d["file_name"], "size": d["file_size"], "put": False}
+            MEDIA.insert(0, {"image_id": "img_" + uid, "url": "qqbot-media://image/v1/" + uid,
+                             "file_name": d["file_name"]})
             return self._json({"upload_id": uid, "presigned_url":
                                f"http://127.0.0.1:{PORT}/cos/{uid}", "expires_in": 3600})
         if path == "/v2/media-images/complete":
@@ -97,5 +119,7 @@ open(job + "/text.md", "w").write("# 本周集合\n\n其他说明\n")
 
 sys.argv = ["x", "--job", job]
 q.main()
-print("调用序列：", [c[0] + " " + c[1].split("/")[-1] for c in CALLS])
+print("调用序列：", [c[0] + " " + (c[1].split("?")[0].split("/")[-1] or "media") for c in CALLS[:14]], "...")
+assert any(c[0] == "DELETE" for c in CALLS), "应先清理旧素材"
+assert len(MEDIA) < 100
 print("PASS")

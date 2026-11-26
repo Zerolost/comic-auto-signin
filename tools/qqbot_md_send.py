@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 API = "https://api.bot.qq.com"
@@ -116,6 +117,39 @@ def resolve_title(a, job):
             return lines[0].lstrip("# ").strip()
     return os.path.basename(job.rstrip("/"))
 
+def list_media(token):
+    """翻页拿全部素材，返回 (总数, [image_id...])"""
+    ids, cursor = [], None
+    while True:
+        q = f"?cursor={urllib.parse.quote(cursor, safe='')}" if cursor else ""
+        r = call("GET", "/v2/media-images" + q, token)
+        ids += [i["image_id"] for i in (r.get("images") or [])]
+        cursor = r.get("next_cursor")
+        if not cursor:
+            return r.get("total", len(ids)), ids
+
+
+def cleanup_media(token, keep):
+    """删掉最旧的素材直到剩余 keep 张；放不下就报错，避免发一半"""
+    total, ids = list_media(token)
+    print(f"素材库当前 {total} 张（上限 100，保留 {keep} 张）")
+    if total <= keep:
+        return 0
+    drop = ids[len(ids) - (total - keep):]   # 列表按上传时间倒序，末尾最旧
+    for iid in drop:
+        call("DELETE", f"/v2/media-images/{iid}/delete", token)
+    print(f"🧹 清理 {len(drop)} 张旧素材，剩余 {total - len(drop)} 张")
+    return len(drop)
+
+
+def reserve_for(need):
+    """给本次要上传的图腾位置：上限 100，预留 QQ_MEDIA_RESERVE(默认 20) 张给别处"""
+    try:
+        reserve = int(os.environ.get("QQ_MEDIA_RESERVE", "20"))
+    except ValueError:
+        reserve = 20
+    return max(1, 100 - reserve - need)
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -137,33 +171,43 @@ def main():
         return
 
     token = get_token()
+    # 先把配额腾出来：留 5 张余量，其余按最旧删除
+    cleanup_media(token, reserve_for(len(files)))
+
     n = 0
     while n < len(files):
-        chunk, content_len = [], len(title) + 40
-        while n + len(chunk) < len(files) and len(chunk) < PER_MSG:
-            stem = os.path.splitext(os.path.basename(files[n + len(chunk)]))[0]
-            cost = len(stem) * 2 + 80          # 中文按 2 字节粗算
-            if content_len + cost > CONTENT_LIMIT:
-                break
-            content_len += cost
-            chunk.append(files[n + len(chunk)])
-        blocks, urls = [], []
+        remaining = len(files) - n
+        chunk = pick_chunk(files, n, title)
+        # 上传前再确认一次空间（素材库是全机器人共享的）
+        cleanup_media(token, reserve_for(len(chunk)))
+        blocks = []
         for p in chunk:
             stem = os.path.splitext(os.path.basename(p))[0]
             url = upload_media(token, p)
             print(f"⬆️ {os.path.basename(p)}")
-            urls.append(url)
             blocks.append((stem, url))
         joined = ""
         for i, (stem, url) in enumerate(blocks, 1):
             first = stem.splitlines()[0][:60]
             joined += f"{n + i}. **{first}**\n\n![{first}]({url})\n\n"
-        body = joined
         head = f"# {title}\n\n" if n == 0 else ""
-        send_markdown(token, gid, (head + body).rstrip())
-        print(f"💬 已发送（第 {n + 1}-{n + len(chunk)} 张）")
+        send_markdown(token, gid, (head + joined).rstrip())
+        print(f"💬 已发送（第 {n + 1}-{n + len(chunk)} 张，共剩余 {remaining - len(chunk)} 张待发）")
         n += len(chunk)
         time.sleep(4)
+
+
+def pick_chunk(files, n, title):
+    """按张数和文本长度切一块"""
+    chunk, content_len = [], len(title) + 40
+    while n + len(chunk) < len(files) and len(chunk) < PER_MSG:
+        stem = os.path.splitext(os.path.basename(files[n + len(chunk)]))[0]
+        cost = len(stem) * 2 + 80
+        if content_len + cost > CONTENT_LIMIT:
+            break
+        content_len += cost
+        chunk.append(files[n + len(chunk)])
+    return chunk
 
 
 if __name__ == "__main__":
