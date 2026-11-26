@@ -1,161 +1,48 @@
-# Comic Auto Sign-in 漫画平台自动签到
+# QQ 邮箱发图
 
-[![GitHub License](https://img.shields.io/github/license/muzimu217/comic-auto-signin)](https://github.com/muzimu217/comic-auto-signin/blob/main/LICENSE)
-[![GitHub Stars](https://img.shields.io/github/stars/muzimu217/comic-auto-signin)](https://github.com/muzimu217/comic-auto-signin/stargazers)
+在 GitHub 上**点按钮**把仓库里的图片（可带文字）发到 QQ 邮箱 → 手机 QQ 的「QQ邮箱」提醒里直接看图。不需要服务器、不需要跑 QQ 协议端。
 
-基于 GitHub Actions 的漫画平台自动签到工具，支持多账号配置。
+## 用法（每次发东西）
 
-## ✨ 功能特性
-
-- ✅ 支持 Pica（哔咔漫画）和 JM（禁漫天堂）两个平台
-- ✅ 支持每个平台配置多个账号
-- ✅ 每天自动签到（北京时间 8:30）
-- ✅ 支持代理配置
-- ✅ 支持手动触发运行
-- ✅ 完全免费，基于 GitHub Actions
-
-## 🚀 快速开始
-
-### 1. Fork 本仓库
-
-点击右上角 Fork 按钮，将仓库复制到你的账号下
-
-### 2. 配置账号信息
-
-进入你的仓库 **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
-
-添加名为 `ACCOUNTS_CONFIG` 的 Secret，值为 JSON 格式：
-
-```json
-{
-  "pica": [
-    {"user": "pica账号1", "password": "pica密码1"},
-    {"user": "pica账号2", "password": "pica密码2"}
-  ],
-  "jm": [
-    {"user": "jm账号1", "password": "jm密码1"},
-    {"user": "jm账号2", "password": "jm密码2"}
-  ],
-  "proxy": ""
-}
+```
+jobs/
+└─ 20261126-晚点吃啥/        ← 目录名随便起，会当默认邮件标题
+   ├─ text.md                ← 正文（markdown，可省）
+   ├─ images.txt             ← 图片顺序（可省，默认按文件名拼音排序）
+   └─ images/                ← 放图片，jpg/png/gif/webp/bmp
+      ├─ 1.png
+      └─ 2.jpg
 ```
 
-**配置说明：**
-- `pica`: Pica 平台账号列表（可配置多个或留空数组 `[]`）
-- `jm`: JM 平台账号列表（可配置多个或留空数组 `[]`）
-- `proxy`: 代理地址（可选，不需要可以设为空字符串 `""` 或删除该字段）
+1. 在 GitHub 网页把图和 text.md 上传到 `jobs/<目录名>/`
+2. 仓库 **Actions → QQ 邮箱推送图片 → Run workflow**
+   - `job`：留空 = 发 `jobs/` 下所有待发目录；填 `20261126` 这种前缀就只发匹配的
+   - `subject`：邮件标题，留空用目录名
+   - `archive`：默认勾选，发完把目录从 `jobs/` 删掉（同一目录名以后还能重用）
+3. 收邮件：文字在正文，图片内嵌显示，QQ 手机端长按可保存
 
-### 3. 启用 GitHub Actions
+一次没发完？`job` 留空再点一次即可（已归档的不会重发）。
 
-进入 **Actions** 页面，启用 Workflows，然后手动运行一次测试
+## 一次性配置（5 分钟）
 
-## 📝 配置示例
+1. **QQ 邮箱开 SMTP**：网页版邮箱 → 设置 → 账号 → 开启「POP3/SMTP 服务」→ 生成**授权码**（16 位，不是 QQ 密码）。可能要求先绑定手机/安全验证。
+2. **仓库 Secrets**（Settings → Secrets and variables → Actions → New repository secret）：
+   - `QQMAIL_USER` = 你的 QQ 邮箱，如 `123456@qq.com`
+   - `QQMAIL_AUTH_CODE` = 上一步的授权码
+   - `QQMAIL_TO` = 收件邮箱，发给自己就填同一个
+3. 可选 Variables：`QQMAIL_MAX_IMAGES`（单封最多几张图，默认 20；体积上限约 23MB，超了会自动跳过剩下的）
 
-### 示例 1：多账号配置
+> 想发到别的 QQ 邮箱也行：`QQMAIL_TO` 填对方地址即可，发件人仍是你的 QQ 邮箱。
 
-```json
-{
-  "pica": [
-    {"user": "user1@example.com", "password": "pass1"},
-    {"user": "user2@example.com", "password": "pass2"}
-  ],
-  "jm": [
-    {"user": "jmuser1", "password": "pass1"},
-    {"user": "jmuser2", "password": "pass2"}
-  ]
-}
-```
+## 注意
 
-### 示例 2：仅 Pica 平台
+- 这是「邮件进 QQ 邮箱」路线：手机装 QQ 并开启 QQ邮箱 提醒，通知栏就能点开看图；不是往 QQ 聊天窗口里发消息（那需要挂着 QQ 协议端）。
+- 公开仓库里图片是公开的；不想公开就把整个仓库设成 private（Actions 照常可用，只是私有仓库每月有免费额度）。
+- 图片按文件名排序，想控顺序就写 `images.txt`，一行一个文件名。
 
-```json
-{
-  "pica": [
-    {"user": "your_email@example.com", "password": "your_password"}
-  ],
-  "jm": []
-}
-```
-
-### 示例 3：仅 JM 平台
-
-```json
-{
-  "pica": [],
-  "jm": [
-    {"user": "your_username", "password": "your_password"}
-  ]
-}
-```
-
-### 示例 4：使用代理
-
-```json
-{
-  "pica": [
-    {"user": "your_email@example.com", "password": "your_password"}
-  ],
-  "jm": [
-    {"user": "your_username", "password": "your_password"}
-  ],
-  "proxy": "127.0.0.1:7890"
-}
-```
-
-## ⏰ 定时任务
-
-- **自动运行时间**：每天 UTC 0:30（北京时间 8:30）
-- **手动触发**：Actions → Comics Daily Sign-in → Run workflow
-
-## 🔧 本地运行
+## 本地测试
 
 ```bash
-# 克隆仓库
-git clone https://github.com/muzimu217/comic-auto-signin.git
-cd comic-auto-signin
-
-# 安装依赖
-pip install -r requirements.txt
-
-# 设置环境变量
-export ACCOUNTS_CONFIG='{"pica":[{"user":"your_user","password":"your_pass"}],"jm":[{"user":"your_user","password":"your_pass"}]}'
-
-# 运行
-python main.py
+cd /var/minis/workspace/qq-mail
+python3 tools/qqmail.py --job jobs/<目录名> --dry-run
 ```
-
-## ❓ 常见问题
-
-**Q: 如何添加 GitHub Secret？**  
-A: 仓库页面 → Settings → Secrets and variables → Actions → New repository secret
-
-**Q: 如何验证配置是否正确？**  
-A: 进入 Actions 页面，手动触发一次 workflow，查看运行日志
-
-**Q: 支持几个账号？**  
-A: 理论上无限制，建议每个平台不超过 10 个账号
-
-**Q: 代理如何配置？**  
-A: 格式为 `IP:端口`，例如 `127.0.0.1:7890`。不需要代理可以设为空字符串或删除该字段
-
-**Q: Pica 签到显示 fail 是什么意思？**  
-A: 表示今天已经签到过了，不是错误
-
-**Q: 会不会泄露我的账号信息？**  
-A: 不会。账号信息存储在 GitHub Secrets 中，加密保存，日志中也不会显示密码
-
-## 📄 开源协议
-
-本项目基于 [MIT License](LICENSE) 开源
-
-## 🙏 致谢
-
-感谢原项目 [RahabHub/ComicsPuncher](https://github.com/RahabHub/ComicsPuncher) 提供的基础代码
-
-## ⚠️ 免责声明
-
-本工具仅供学习交流使用，请遵守相关平台的使用条款。使用本工具产生的任何后果由使用者自行承担。
-
----
-
-如果这个项目对你有帮助，欢迎 ⭐ Star 支持一下！

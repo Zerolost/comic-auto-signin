@@ -1,0 +1,94 @@
+name: QQ 邮箱推送图片
+
+# 只手动触发：在仓库 Actions 页面点 “Run workflow”
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: '要发的 job 名（jobs/ 下的目录名，可填前缀，留空=发全部待发）'
+        required: false
+        default: ''
+      subject:
+        description: '邮件标题（留空=用 job 名）'
+        required: false
+        default: ''
+      to:
+        description: '收件 QQ 邮箱（留空=仓库变量 QQMAIL_TO）'
+        required: false
+        default: ''
+      archive:
+        description: '发完把 job 目录归档到 jobs/_sent'
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: qqmail
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 列出待发 job
+        id: pick
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 tools/list_jobs.py "${{ inputs.job }}" | tee jobs.json
+          count=$(python3 -c "import json;print(len(json.load(open('jobs.json'))['jobs']))")
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" = "0" ]; then
+            echo "::notice::没有待发内容（jobs/ 下没有匹配的目录，或已在 _sent 里归档）"
+          fi
+
+      - name: 逐条发送
+        if: steps.pick.outputs.count != '0'
+        env:
+          QQMAIL_USER: ${{ secrets.QQMAIL_USER }}
+          QQMAIL_AUTH_CODE: ${{ secrets.QQMAIL_AUTH_CODE }}
+          QQMAIL_TO: ${{ secrets.QQMAIL_TO }}
+          MAX_IMAGES: ${{ vars.QQMAIL_MAX_IMAGES }}
+        run: |
+          set -e
+          failed=0
+          for job in $(python3 -c "import json;print(' '.join(json.load(open('jobs.json'))['jobs']))"); do
+            subj="${{ inputs.subject }}"
+            [ -n "$subj" ] || subj="$job"
+            [ $failed -eq 0 ] || subj="$subj（续）"
+            echo "::group::发送 $job"
+            if python3 tools/qqmail.py --job "jobs/$job" --subject "$subj" --to "${{ inputs.to }}"; then
+              echo "$job" >> sent.txt
+            else
+              failed=1
+              echo "::error::发送 $job 失败"
+            fi
+            echo "::endgroup::"
+            sleep 5
+          done
+          [ $failed -eq 0 ]
+
+      - name: 归档已发送目录
+        if: steps.pick.outputs.count != '0' && inputs.archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          [ -f sent.txt ] || exit 0
+          owner="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          slot=$(date -u +%Y%m%d-%H%M%S)
+          while read -r job; do
+            [ -n "$job" ] || continue
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/contents/jobs/$job" \
+              -f message="chore(jobs): 归档 $slot/$job" -f branch="$GITHUB_REF_NAME" \
+              && echo "已归档 jobs/$job"
+          done < sent.txt
