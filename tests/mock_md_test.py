@@ -79,6 +79,7 @@ class H(http.server.BaseHTTPRequestHandler):
             return self._json({"image_id": "img_" + d["upload_id"],
                                "url": "qqbot-media://image/v1/" + d["upload_id"], "ttl": 7776000})
         if path.endswith("/messages"):
+            print("---- markdown ----\n" + d["markdown"]["content"][:400] + "\n------------------")
             assert d["msg_type"] == 2 and d["markdown"]["content"]
             c = d["markdown"]["content"]
             assert "qqbot-media://image/v1/" in c, "图片应走平台引用"
